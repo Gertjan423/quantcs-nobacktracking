@@ -539,6 +539,13 @@ unify  untchs eqs
     go  p (x:xs) | Just y <- p x = Just (y, xs)
                  | otherwise     = second (x:) <$> go p xs
 
+-- | Class Constraint Unification. Unifies two given class constraints.
+-- | The first argument are the untouchable variables.
+unifyClsCtr :: MonadError String m => [RnTyVar] -> RnClsCt -> RnClsCt -> m (Maybe HsTySubst)
+unifyClsCtr untchs (ClsCt c1 ty1) (ClsCt c2 ty2)
+  | c1 /= c2  = return Nothing
+  | otherwise = catchError (unify untchs [ty1 :~: ty2] >>= return . Just) (\_ -> return Nothing)
+
 -- | Occurs Check
 occursCheck :: RnTyVar -> RnMonoTy -> Bool
 occursCheck _ (TyCon {})      = True
@@ -560,17 +567,29 @@ overlapCheck theory cls_ct@(ClsCt cls1 ty1) = case lookupSLMaybe overlaps (theor
       = Just (text "overlapCheck:" $$ ppr cls_ct $$ ppr ctr)
       | otherwise = Nothing
 
+-- | Returns the overlap between a program theory and a given class constraint
+getOverlap :: MonadError String m => [RnTyVar] -> ProgramTheory -> RnClsCt -> m AnnCts
+getOverlap untchs theory clsCt = findSLMaybeM (\(_ :| c) -> checkCtrOverlap untchs clsCt c) theory >>= \case
+  Just overlap -> return $ fst overlap
+  Nothing      -> return SN
+
+-- | Returns whether the head of the given constraint overlaps with the given class constraint
+checkCtrOverlap :: MonadError String m => [RnTyVar] -> RnClsCt -> RnCtr -> m (Maybe ())
+checkCtrOverlap untchs clsCt ctr = unifyClsCtr untchs clsCt (ctrHead ctr) >>= \case
+  Just _  -> return $ Just ()
+  Nothing -> return   Nothing
+
 -- * Constraint Entailment
 -- ------------------------------------------------------------------------------
 
 -- | Completely entail a set of constraints. Fail if not possible
 entailTcM :: [RnTyVar] -> ProgramTheory -> ProgramTheory -> TcM FcTmSubst
-entailTcM untch theory ctrs = runSolverFirstM (go ctrs)
-  where
-    go SN        = return mempty
-    go (cs :> c) = do
-      (ccs, subst1) <- rightEntailsBacktrack untch theory c
-      subst2 <- go (cs <> ccs)
+entailTcM untch theory ctrs =
+  case ctrs of
+    SN        -> return mempty
+    (cs :> c) -> do
+      (ccs, subst1) <- rightEntailsNoBacktrack untch theory c
+      subst2 <- entailTcM untch theory (cs <> ccs)
       return (subst2 <> subst1)
 
 -- | Exhaustively simplify a set of constraints (this version does not backtrack)
@@ -690,6 +709,72 @@ rightEntailsBacktrack untch theory (d0 :| (CtrAbs (b :| _) inctr)) = do
   dc <- freshDictVar
   -- Recursive call
   (ann_cts, ev_subst) <- rightEntailsBacktrack (untch ++ [b]) theory (dc :| inctr)
+
+  (res_ann_cts, dsubsts) <- fmap unzipSnocList $ forSnocListM ann_cts $ \(d :| ctr) -> do
+    new_var <- freshRnTyVar kind
+    d'      <- freshDictVar
+    let d'ann  = d' :| CtrAbs (new_var :| kind) (substVar b (TyVar new_var) ctr)
+
+    let dsubst = d |-> FcTmTyApp (FcTmVar d') (FcTyVar fcb)
+
+    return (d'ann, dsubst)
+
+  let ev_subst' = d0 |-> (FcTmTyAbs fcb $
+                           substFcTmInTm (monoidFoldSnocList dsubsts) $
+                             substFcTmInTm ev_subst $
+                               FcTmVar dc)
+
+  return (res_ann_cts, ev_subst')
+  where
+    kind = kindOf b
+    fcb  = rnTyVarToFcTyVar b
+
+-- | Performs a single right entailment step, without backtracking.
+--   a) fail if the constraint is not entailed by the given program theory
+--   b) fail if overlapping axioms exist, causing a choice point while entailing the constraint.
+--   c) return the new wanted (class) constraints, as well as the System F term subsitution
+rightEntailsNoBacktrack :: [RnTyVar] -> ProgramTheory -> AnnCtr
+                        -> TcM (ProgramTheory, FcTmSubst)
+-- Implication Case
+rightEntailsNoBacktrack untch theory (d0 :| CtrImpl ctr1 ctr2) = do
+  d1 <- freshDictVar
+  d2 <- freshDictVar
+
+  (res_ccs, ev_subst) <- rightEntailsNoBacktrack untch (theory :> (d1 :| ctr1)) (d2 :| ctr2)
+
+  new_ds <- listToSnocList <$> genFreshDictVars (snocListLength res_ccs) -- Fresh dictionary variables (d's), one for each residual constraint
+
+  -- The new residual constraints
+  let new_residuals = zipWithSnocList (\d' (_d :| ctr) -> d' :| CtrImpl ctr1 ctr) new_ds res_ccs
+
+  -- The new evidence substitution
+  new_ev_subst <- do
+    fc_ty1 <- elabCtr ctr1
+    let dsubst = foldZipWithSnocList (\d' d -> d |-> FcTmApp (FcTmVar d') (FcTmVar d1))
+                                     new_ds
+                                     (labelOf res_ccs)
+    return (d0 |-> FcTmAbs d1 fc_ty1 (substFcTmInTm (dsubst <> ev_subst) (FcTmVar d2)))
+
+  return (new_residuals, new_ev_subst)
+
+
+-- Class Case
+rightEntailsNoBacktrack untch theory (d :| CtrClsCt cls_ct) = do
+  -- TODO Check that only instance and local axioms are in theory
+  overlapping <- getOverlap untch theory cls_ct
+  -- TODO Sure that we want an error when entailment fails?
+  when (snocListLength overlapping == 0) $ throwError "Entailment failed: No matching axioms available"
+  when (snocListLength overlapping > 1) $ throwError "Entailment failed: Overlapping axioms"
+  leftEntails untch (head $ snocListToList overlapping) (d :|cls_ct) >>= \case -- TODO list conversion not very nice ; okay to keep name d?
+    Nothing  -> throwError "Entailment failed"
+    Just res -> return res
+  -- = leftEntailsBacktrack untch theory (d :| cls_ct)
+
+-- Universal Quantification Case -- GEORGE: Finish rewriting me
+rightEntailsNoBacktrack untch theory (d0 :| (CtrAbs (b :| _) inctr)) = do
+  dc <- freshDictVar
+  -- Recursive call
+  (ann_cts, ev_subst) <- rightEntailsNoBacktrack (untch ++ [b]) theory (dc :| inctr)
 
   (res_ann_cts, dsubsts) <- fmap unzipSnocList $ forSnocListM ann_cts $ \(d :| ctr) -> do
     new_var <- freshRnTyVar kind
