@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-} -- George says: God I hate this flag
+{-# OPTIONS_GHC -Wall                   #-}
 
 module Frontend.HsTypeChecker (hsElaborate) where
 
@@ -306,10 +307,6 @@ instance MonadUnique SolveM where
 liftSolveM :: TcM a -> SolveM a
 liftSolveM m = SolveM (lift m)
 
--- | Get the first solution
-runSolverFirstM :: SolveM a -> TcM a
-runSolverFirstM (SolveM m) = firstListT m
-
 -- * Constraint store
 -- ------------------------------------------------------------------------------
 
@@ -584,12 +581,12 @@ checkCtrOverlap untchs ctr clsCt = unifyClsCtr untchs clsCt (ctrHead ctr) >>= \c
 
 -- | Returns the superclasses of a given class constraints, with a given list of superclass relations
 getSuperClsCt :: [RnTyVar] -> ProgramTheory -> RnClsCt -> TcM ProgramTheory
-getSuperClsCt untchs superThr clsCt = lookupSLMaybeFullM (getSuperClsCt' untchs clsCt) superThr >>= \case
+getSuperClsCt untchs superThr clsCt = lookupSLMaybeFullM getSuperClsCt' superThr >>= \case
   Just res -> return $ fmap snd res
   Nothing  -> return mempty
   where
-    getSuperClsCt' :: [RnTyVar] -> RnClsCt -> AnnCtr -> TcM (Maybe AnnCtr)
-    getSuperClsCt' untchs clsCt (_d :| ctr) = do
+    getSuperClsCt' :: AnnCtr -> TcM (Maybe AnnCtr)
+    getSuperClsCt' (_d :| ctr) = do
       (asD, clsD, ctrD) <- deconstructSuperCtr ctr
       checkCtrOverlap untchs (constructCtr (asD, [], clsD)) clsCt >>= \case
         Just _  -> do
@@ -602,7 +599,7 @@ getSuperClsCt untchs superThr clsCt = lookupSLMaybeFullM (getSuperClsCt' untchs 
       (as, cls, ctr) -> return (a:as, cls, ctr)
     deconstructSuperCtr (CtrImpl c1 c2) = case c1 of
       (CtrClsCt cls) -> return ([],   cls, c2)
-      otherwise      -> throwError "Invalid superclass format"
+      _              -> throwError "Invalid superclass format"
     deconstructSuperCtr (CtrClsCt _)    = throwError "Invalid superclass format"
 
 -- * Constraint Entailment
@@ -698,62 +695,6 @@ leftEntailsDet untch theory cls_ct = lookupSLMaybeM left_entails theory
   where
     left_entails ct = leftEntails untch ct cls_ct
 
--- | Performs a single right entailment step.
---   a) fail if the constraint is not entailed by the given program theory
---   b) return the new wanted (class) constraints, as well as the System F term subsitution
-rightEntailsBacktrack :: [RnTyVar] -> ProgramTheory -> AnnCtr
-                      -> SolveM (ProgramTheory, FcTmSubst)
--- Implication Case
-rightEntailsBacktrack untch theory (d0 :| CtrImpl ctr1 ctr2) = do
-  d1 <- freshDictVar
-  d2 <- freshDictVar
-
-  (res_ccs, ev_subst) <- rightEntailsBacktrack untch (theory :> (d1 :| ctr1)) (d2 :| ctr2)
-
-  new_ds <- listToSnocList <$> genFreshDictVars (snocListLength res_ccs) -- Fresh dictionary variables (d's), one for each residual constraint
-
-  -- The new residual constraints
-  let new_residuals = zipWithSnocList (\d' (_d :| ctr) -> d' :| CtrImpl ctr1 ctr) new_ds res_ccs
-
-  -- The new evidence substitution
-  new_ev_subst <- do
-    fc_ty1 <- liftSolveM (elabCtr ctr1)
-    let dsubst = foldZipWithSnocList (\d' d -> d |-> FcTmApp (FcTmVar d') (FcTmVar d1))
-                                     new_ds
-                                     (labelOf res_ccs)
-    return (d0 |-> FcTmAbs d1 fc_ty1 (substFcTmInTm (dsubst <> ev_subst) (FcTmVar d2)))
-
-  return (new_residuals, new_ev_subst)
-
-
--- Class Case
-rightEntailsBacktrack untch theory (d :| CtrClsCt cls_ct)
-  = leftEntailsBacktrack untch theory (d :| cls_ct)
-
--- Universal Quantification Case -- GEORGE: Finish rewriting me
-rightEntailsBacktrack untch theory (d0 :| (CtrAbs (b :| _) inctr)) = do
-  dc <- freshDictVar
-  -- Recursive call
-  (ann_cts, ev_subst) <- rightEntailsBacktrack (untch ++ [b]) theory (dc :| inctr)
-
-  (res_ann_cts, dsubsts) <- fmap unzipSnocList $ forSnocListM ann_cts $ \(d :| ctr) -> do
-    new_var <- freshRnTyVar kind
-    d'      <- freshDictVar
-    let d'ann  = d' :| CtrAbs (new_var :| kind) (substVar b (TyVar new_var) ctr)
-
-    let dsubst = d |-> FcTmTyApp (FcTmVar d') (FcTyVar fcb)
-
-    return (d'ann, dsubst)
-
-  let ev_subst' = d0 |-> (FcTmTyAbs fcb $
-                           substFcTmInTm (monoidFoldSnocList dsubsts) $
-                             substFcTmInTm ev_subst $
-                               FcTmVar dc)
-
-  return (res_ann_cts, ev_subst')
-  where
-    kind = kindOf b
-    fcb  = rnTyVarToFcTyVar b
 
 -- | Performs a single right entailment step, without backtracking.
 --   a) fail if the constraint is not entailed by the given program theory
@@ -820,12 +761,6 @@ rightEntailsNoBacktrack untch theory (d0 :| (CtrAbs (b :| _) inctr)) = do
   where
     kind = kindOf b
     fcb  = rnTyVarToFcTyVar b
-
-leftEntailsBacktrack :: [RnTyVar] -> ProgramTheory -> AnnClsCt
-                     -> SolveM (ProgramTheory, FcTmSubst)
-leftEntailsBacktrack untch theory ann_cls_ct = liftSolveM (snocListChooseM theory left_entail) >>= SolveM . selectListT
-  where
-    left_entail ann_ctr = leftEntails untch ann_ctr ann_cls_ct
 
 -- | Checks whether the class constraint is entailed by the given constraint
 --   a) fails if the class constraint is not entailed
