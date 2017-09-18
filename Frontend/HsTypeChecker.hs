@@ -569,15 +569,41 @@ overlapCheck theory cls_ct@(ClsCt cls1 ty1) = case lookupSLMaybe overlaps (theor
 
 -- | Returns the overlap between a program theory and a given class constraint
 getOverlap :: MonadError String m => [RnTyVar] -> ProgramTheory -> RnClsCt -> m AnnCts
-getOverlap untchs theory clsCt = findSLMaybeM (\(_ :| c) -> checkCtrOverlap untchs clsCt c) theory >>= \case
-  Just overlap -> return $ fst overlap
+getOverlap untchs theory clsCt = lookupSLMaybeFullM (\(_ :| c) -> checkCtrOverlap untchs c clsCt) theory >>= \case
+  Just overlap -> return $ fmap fst overlap
   Nothing      -> return SN
 
 -- | Returns whether the head of the given constraint overlaps with the given class constraint
-checkCtrOverlap :: MonadError String m => [RnTyVar] -> RnClsCt -> RnCtr -> m (Maybe ())
-checkCtrOverlap untchs clsCt ctr = unifyClsCtr untchs clsCt (ctrHead ctr) >>= \case
+checkCtrOverlap :: MonadError String m => [RnTyVar] -> RnCtr -> RnClsCt -> m (Maybe ())
+checkCtrOverlap untchs ctr clsCt = unifyClsCtr untchs clsCt (ctrHead ctr) >>= \case
   Just _  -> return $ Just ()
   Nothing -> return   Nothing
+
+-- * Superclass checking
+-- ------------------------------------------------------------------------------
+
+-- | Returns the superclasses of a given class constraints, with a given list of superclass relations
+getSuperClsCt :: [RnTyVar] -> ProgramTheory -> RnClsCt -> TcM ProgramTheory
+getSuperClsCt untchs superThr clsCt = lookupSLMaybeFullM (getSuperClsCt' untchs clsCt) superThr >>= \case
+  Just res -> return $ fmap snd res
+  Nothing  -> return mempty
+  where
+    getSuperClsCt' :: [RnTyVar] -> RnClsCt -> AnnCtr -> TcM (Maybe AnnCtr)
+    getSuperClsCt' untchs clsCt (_d :| ctr) = do
+      (asD, clsD, ctrD) <- deconstructSuperCtr ctr
+      checkCtrOverlap untchs (constructCtr (asD, [], clsD)) clsCt >>= \case
+        Just _  -> do
+          d' <- freshDictVar
+          return $ Just $ d' :| ctrD
+        Nothing -> return Nothing
+
+    deconstructSuperCtr :: RnCtr -> TcM ([RnTyVarWithKind], RnClsCt, RnCtr)
+    deconstructSuperCtr (CtrAbs a c)    = deconstructSuperCtr c >>= \case
+      (as, cls, ctr) -> return (a:as, cls, ctr)
+    deconstructSuperCtr (CtrImpl c1 c2) = case c1 of
+      (CtrClsCt cls) -> return ([],   cls, c2)
+      otherwise      -> throwError "Invalid superclass format"
+    deconstructSuperCtr (CtrClsCt _)    = throwError "Invalid superclass format"
 
 -- * Constraint Entailment
 -- ------------------------------------------------------------------------------
