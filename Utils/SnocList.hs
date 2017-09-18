@@ -8,7 +8,8 @@ module Utils.SnocList
 , lookupSLMaybe      -- rename to lookupSL
 , monoidFoldSnocList -- I don't like this one
 , lookupSLMaybeM
-, lookupSLMaybeMatchM, mapSnocListM, forSnocListM, zipWithSnocListM, singletonSnocList
+, lookupSLMaybeMatchM
+, lookupSLMaybeFullM, mapSnocListM, forSnocListM, zipWithSnocListM, singletonSnocList
 , foldZipWithSnocList, unzipSnocList, unzipWithSnocList, zipSnocListExact, zipWithSnocList
 , findSLMaybeM
 ) where
@@ -115,6 +116,16 @@ lookupSLMaybeMatchM _p SN        = return Nothing
 lookupSLMaybeMatchM  p (xs :> x) = p x >>= \case
   Just y  -> return (Just (x, y))
   Nothing -> lookupSLMaybeMatchM p xs
+
+-- | Lookup something in a SnocList based on a monadic Maybe-predicate
+-- Return all matches, with their corresponding matching SnocList elements
+lookupSLMaybeFullM :: Monad m => (a -> m (Maybe b)) -> SnocList a -> m (Maybe (SnocList (a, b)))
+lookupSLMaybeFullM _p SN        = return Nothing
+lookupSLMaybeFullM  p (xs :> x) = p x >>= \case
+  Just y  -> lookupSLMaybeFullM p xs >>= \case
+    Just res -> return $ Just (res :> (x, y))
+    Nothing  -> return $ Just (SN  :> (x, y))
+  Nothing -> lookupSLMaybeFullM p xs
 
 findSLMaybeM :: Monad m => (a -> m (Maybe b)) -> SnocList a -> m (Maybe (SnocList a, b))
 findSLMaybeM _f SN = return Nothing
