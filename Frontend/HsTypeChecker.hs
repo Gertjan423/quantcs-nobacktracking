@@ -727,7 +727,6 @@ rightEntailsNoBacktrack untch theory (d0 :| CtrImpl ctr1 ctr2) = do
 
 -- Class Case
 rightEntailsNoBacktrack untch theory (d :| CtrClsCt cls_ct) = do
-  -- TODO Check that only instance and local axioms are in theory
   overlapping <- getOverlap untch theory cls_ct
   -- TODO Sure that we want an error when entailment fails?
   when (snocListLength overlapping == 0) $ throwError "Entailment failed: No matching axioms available"
