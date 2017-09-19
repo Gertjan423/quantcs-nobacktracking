@@ -34,6 +34,8 @@ import Control.Monad.Except
 import Control.Arrow (second)
 import Data.List (nub)
 
+-- import Debug.Trace
+
 -- * Create the typechecking environment from the renaming one
 -- ------------------------------------------------------------------------------
 
@@ -515,8 +517,11 @@ unify  untchs eqs
                                    , text "Untouchables"         <+> colon <+> ppr untchs ]
   where
     one_step :: [RnTyVar] -> EqCt -> Maybe (HsTySubst, EqCs)
-    one_step _us (TyVar v1 :~: TyVar v2)
-      | v1 == v2 = Just (mempty, [])
+    one_step us (TyVar v1 :~: TyVar v2)
+      | v1 == v2        = Just (mempty, []) -- TODO : bugfix in unify okay? Place in general compiler as well?
+      | v1 `notElem` us = Just (v1 |-> (TyVar v2), [])
+      | v2 `notElem` us = Just (v2 |-> (TyVar v1), [])
+      | otherwise       = Nothing
     one_step us (TyVar v :~: ty)
       | v `notElem` us, occursCheck v ty = Just (v |-> ty, [])
       | otherwise                        = Nothing
@@ -571,10 +576,8 @@ getOverlap untchs theory clsCt = lookupSLMaybeFullM (\(_ :| c) -> checkCtrOverla
   Nothing      -> return SN
 
 -- | Returns whether the head of the given constraint overlaps with the given class constraint
-checkCtrOverlap :: MonadError String m => [RnTyVar] -> RnCtr -> RnClsCt -> m (Maybe ())
-checkCtrOverlap untchs ctr clsCt = unifyClsCtr untchs clsCt (ctrHead ctr) >>= \case
-  Just _  -> return $ Just ()
-  Nothing -> return   Nothing
+checkCtrOverlap :: MonadError String m => [RnTyVar] -> RnCtr -> RnClsCt -> m (Maybe HsTySubst)
+checkCtrOverlap untchs ctr clsCt = unifyClsCtr untchs clsCt (ctrHead ctr)
 
 -- * Superclass checking
 -- ------------------------------------------------------------------------------
@@ -587,12 +590,12 @@ getSuperClsCt untchs superThr clsCt = lookupSLMaybeFullM getSuperClsCt' superThr
   where
     getSuperClsCt' :: AnnCtr -> TcM (Maybe AnnCtr)
     getSuperClsCt' (_d :| ctr) = do
-      (asD, clsD, ctrD) <- deconstructSuperCtr ctr
-      checkCtrOverlap untchs (constructCtr (asD, [], clsD)) clsCt >>= \case
-        Just _  -> do
+      (_asD, clsD, ctrD) <- deconstructSuperCtr ctr
+      checkCtrOverlap untchs (constructCtr ([], [], clsD)) clsCt >>= \case -- TODO okay to leave asD?
+        Just subst -> do
           d' <- freshDictVar
-          return $ Just $ d' :| ctrD
-        Nothing -> return Nothing
+          return $ Just $ d' :| (applySubst subst ctrD)
+        Nothing    -> return Nothing
 
     deconstructSuperCtr :: RnCtr -> TcM ([RnTyVarWithKind], RnClsCt, RnCtr)
     deconstructSuperCtr (CtrAbs a c)    = deconstructSuperCtr c >>= \case
@@ -729,8 +732,8 @@ rightEntailsNoBacktrack untch theory (d0 :| CtrImpl ctr1 ctr2) = do
 rightEntailsNoBacktrack untch theory (d :| CtrClsCt cls_ct) = do
   overlapping <- getOverlap untch theory cls_ct
   -- TODO Sure that we want an error when entailment fails?
-  when (snocListLength overlapping == 0) $ throwError "Entailment failed: No matching axioms available"
-  when (snocListLength overlapping > 1) $ throwError "Entailment failed: Overlapping axioms"
+  when (snocListLength overlapping == 0) $ throwError $ "Entailment failed: No matching axioms available : " ++ (renderWithColor (ppr cls_ct)) ++ " in " ++ (renderWithColor (ppr theory))
+  when (snocListLength overlapping > 1) $ throwError $ "Entailment failed: Overlapping axioms : " ++ (renderWithColor (ppr cls_ct)) ++ " in " ++ (renderWithColor (ppr theory)) ++ " \n namely " ++ (renderWithColor (ppr overlapping))
   leftEntails untch (head $ snocListToList overlapping) (d :|cls_ct) >>= \case -- TODO list conversion not very nice ; okay to keep name d?
     Nothing  -> throwError "Entailment failed"
     Just res -> return res
