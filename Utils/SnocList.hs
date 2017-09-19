@@ -4,7 +4,7 @@
 {-# LANGUAGE FlexibleInstances      #-}
 
 module Utils.SnocList
-( SnocList(..), snocListToList, listToSnocList, snocListLength
+( SnocList(..), snocListToList, listToSnocList, snocListLength, concatSnocList
 , lookupSLMaybe      -- rename to lookupSL
 , monoidFoldSnocList -- I don't like this one
 , lookupSLMaybeM
@@ -53,6 +53,12 @@ instance Functor SnocList where
 
 instance (Eq tv, ContainsFreeTyVars a tv) => ContainsFreeTyVars (SnocList a) tv where
   ftyvsOf = nub . concatMap ftyvsOf . snocListToList
+
+-- | concat for SnocList
+concatSnocList :: SnocList (SnocList a) -> SnocList a
+concatSnocList SN                = SN
+concatSnocList (xs :> SN)        = concatSnocList xs
+concatSnocList (xs :> (ys :> y)) = (concatSnocList (xs :> ys)) :> y
 
 -- | mapM for SnocList
 mapSnocListM :: Monad m => (a -> m b) -> SnocList a -> m (SnocList b)

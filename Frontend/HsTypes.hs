@@ -159,6 +159,10 @@ hsTyPatToMonoTy (HsTyConPat tc)           = TyCon tc
 hsTyPatToMonoTy (HsTyAppPat pat1 pat2)    = TyApp (hsTyPatToMonoTy pat1) (hsTyPatToMonoTy pat2)
 hsTyPatToMonoTy (HsTyVarPat (a :| _kind)) = TyVar a
 
+-- | Cast a kind annotated type variable to a regular type variable
+tyVarWithKindToTyVar :: HsTyVarWithKind a -> HsTyVar a
+tyVarWithKindToTyVar (a :| _kind) = a
+
 -- * Types and Constraints
 -- ------------------------------------------------------------------------------
 
@@ -399,6 +403,10 @@ ftToProgramTheory (FT super inst local) = mconcat [super,inst,local]
 -- | Drop the superclass component of the full theory and turn it into a program theory (concatenate)
 ftDropSuper :: FullTheory -> ProgramTheory
 ftDropSuper (FT _super inst local) = inst `mappend` local
+
+-- | Remove the superclass component of the full theory, without turning it into a program theory
+ftRemoveSuper :: FullTheory -> FullTheory
+ftRemoveSuper (FT _super inst local) = (FT SN inst local)
 
 -- * Collecting Free Variables Out Of Objects
 -- ------------------------------------------------------------------------------

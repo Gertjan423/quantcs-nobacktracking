@@ -947,15 +947,18 @@ elabInsDecl theory (InsD ins_ctx cls typat method method_tm) = do
   -- Create the instance constraint scheme
   ins_d <- freshDictVar
   let ins_scheme = ins_d |: constructCtr (bs, ins_ctx, head_ct)
+  let ins_theory = singletonSnocList ins_scheme
 
   --  Generate fresh dictionary variables for the instance context
   ann_ins_ctx <- snd <$> annotateCts ins_ctx
 
-  --  The local program theory
-  let local_theory = theory `ftExtendLocal` ann_ins_ctx `ftExtendLocal` singletonSnocList ins_scheme
+  -- Create the local superclass axioms
+  nested_local_super_axs <- mapM (\ctr -> getSuperClsCt unann_bs (theory_super theory) (ctrHead ctr)) ins_ctx
+  let nested_local_super_axs_zip = zip ins_ctx nested_local_super_axs
+  let local_super_axs = concatSnocList $ listToSnocList $ map (\(ctr, loc_sup) -> fmap (\ctrH -> replaceCtrHead ctr ctrH) loc_sup) nested_local_super_axs_zip
 
   -- The extended program theory
-  let ext_theory = theory `ftExtendInst` singletonSnocList ins_scheme
+  let ext_theory = theory `ftExtendInst` ins_theory
 
   -- Create the dictionary transformer type
   dtrans_ty <- do
@@ -964,9 +967,10 @@ elabInsDecl theory (InsD ins_ctx cls typat method method_tm) = do
     return $ fcTyAbs fc_bs $ fcTyArr fc_ins_ctx fc_head_ty
 
   -- Elaborate the method implementation
+  let local_theory1 = (ftRemoveSuper theory) `ftExtendInst` ins_theory `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
   fc_method_tm <- do
     expected_method_ty <- instMethodTy (hsTyPatToMonoTy typat) <$> lookupTmVarM method
-    elabTermWithSig (map labelOf bs) local_theory method_tm expected_method_ty
+    elabTermWithSig (map labelOf bs) local_theory1 method_tm expected_method_ty
 
   -- Entail the superclass constraints
   fc_super_tms <- do
@@ -976,7 +980,8 @@ elabInsDecl theory (InsD ins_ctx cls typat method method_tm) = do
                       return . substVar a (hsTyPatToMonoTy typat) >>=
                       annotateCts
 
-    ev_subst <- entailTcM (map labelOf bs) (ftToProgramTheory local_theory) super_cs
+    let local_theory2 = (ftRemoveSuper theory) `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
+    ev_subst <- entailTcM (map labelOf bs) (ftToProgramTheory local_theory2) super_cs
     --(residual_cs, ev_subst) <- rightEntailsRec (map labelOf bs) (ftToProgramTheory local_theory) super_cs
     --unless (nullSnocList residual_cs) $
     --  throwErrorM (text "Failed to resolve superclass constraints" <+> colon <+> ppr residual_cs
@@ -998,9 +1003,19 @@ elabInsDecl theory (InsD ins_ctx cls typat method method_tm) = do
 
   return (fc_val_bind, ext_theory)
   where
-    bs      = ftyvsOf typat
-    fc_bs   = map (rnTyVarToFcTyVar . labelOf) bs
-    head_ct = ClsCt cls (hsTyPatToMonoTy typat)
+    bs       = ftyvsOf typat
+    unann_bs = map tyVarWithKindToTyVar bs
+    fc_bs    = map (rnTyVarToFcTyVar . labelOf) bs
+    head_ct  = ClsCt cls (hsTyPatToMonoTy typat)
+
+-- | Append the tail of a constraint to another given constraint
+replaceCtrHead :: RnCtr -> AnnCtr -> AnnCtr
+replaceCtrHead ctrT (d :| ctrH) = d :| (replaceCtrHead' ctrT ctrH)
+  where
+    replaceCtrHead' :: RnCtr -> RnCtr -> RnCtr
+    replaceCtrHead' (CtrAbs  a  c)  ctr = CtrAbs  a  $ replaceCtrHead' c  ctr
+    replaceCtrHead' (CtrImpl c1 c2) ctr = CtrImpl c1 $ replaceCtrHead' c2 ctr
+    replaceCtrHead' (CtrClsCt _)    ctr = ctr
 
 -- | Instantiate a method type for a particular instance
 instMethodTy :: RnMonoTy -> RnPolyTy -> RnPolyTy
