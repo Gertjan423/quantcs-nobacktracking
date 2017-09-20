@@ -982,7 +982,7 @@ elabInsDecl theory (InsD ins_ctx cls typat method method_tm) = do
                       return . substVar a (hsTyPatToMonoTy typat) >>=
                       annotateCts
 
-    let local_theory2 = (ftRemoveSuper theory) `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
+    let local_theory2 = theory `ftExtendInst` ins_theory `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
     ev_subst <- entailTcM (map labelOf bs) (ftToProgramTheory local_theory2) super_cs
     --(residual_cs, ev_subst) <- rightEntailsRec (map labelOf bs) (ftToProgramTheory local_theory) super_cs
     --unless (nullSnocList residual_cs) $
