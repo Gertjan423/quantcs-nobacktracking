@@ -941,8 +941,8 @@ extendCtxKindAnnotatedTysM ann_as = extendCtxTysM as (map kindOf as)
 -- | Elaborate a class instance. Take the program theory also as input and return
 --   a) The dictionary transformer implementation
 --   b) The extended program theory
-elabInsDecl :: FullTheory -> RnInsDecl -> TcM (FcValBind, FullTheory)
-elabInsDecl theory (InsD ins_ctx cls typat method method_tm) = do
+elabInsDecl :: FullTheory -> ProgramTheory -> RnInsDecl -> TcM (FcValBind, FullTheory)
+elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
   -- Ensure the instance does not overlap
   overlapCheck theory head_ct
 
@@ -955,7 +955,7 @@ elabInsDecl theory (InsD ins_ctx cls typat method method_tm) = do
   ann_ins_ctx <- snd <$> annotateCts ins_ctx
 
   -- Create the local superclass axioms
-  nested_local_super_axs <- mapM (\ctr -> getSuperClsCt unann_bs (theory_super theory) (ctrHead ctr)) ins_ctx
+  nested_local_super_axs <- mapM (\ctr -> getSuperClsCt unann_bs super_theory (ctrHead ctr)) ins_ctx
   let nested_local_super_axs_zip = zip ins_ctx nested_local_super_axs
   let local_super_axs = concatSnocList $ listToSnocList $ map (\(ctr, loc_sup) -> fmap (\ctrH -> replaceCtrHead ctr ctrH) loc_sup) nested_local_super_axs_zip
 
@@ -969,7 +969,7 @@ elabInsDecl theory (InsD ins_ctx cls typat method method_tm) = do
     return $ fcTyAbs fc_bs $ fcTyArr fc_ins_ctx fc_head_ty
 
   -- Elaborate the method implementation
-  let local_theory1 = (ftRemoveSuper theory) `ftExtendInst` ins_theory `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
+  let local_theory1 = theory `ftExtendInst` ins_theory `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
   fc_method_tm <- do
     expected_method_ty <- instMethodTy (hsTyPatToMonoTy typat) <$> lookupTmVarM method
     elabTermWithSig (map labelOf bs) local_theory1 method_tm expected_method_ty
@@ -982,7 +982,7 @@ elabInsDecl theory (InsD ins_ctx cls typat method method_tm) = do
                       return . substVar a (hsTyPatToMonoTy typat) >>=
                       annotateCts
 
-    let local_theory2 = (ftRemoveSuper theory) `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
+    let local_theory2 = theory `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
     ev_subst <- entailTcM (map labelOf bs) (ftToProgramTheory local_theory2) super_cs
     --(residual_cs, ev_subst) <- rightEntailsRec (map labelOf bs) (ftToProgramTheory local_theory) super_cs
     --unless (nullSnocList residual_cs) $
@@ -1116,33 +1116,33 @@ elabTermSimpl theory tm = do
 -- ------------------------------------------------------------------------------
 
 -- | Elaborate a program
-elabProgram :: FullTheory -> RnProgram
+elabProgram :: FullTheory -> ProgramTheory -> RnProgram
             -> TcM ( FcProgram       {- Elaborated program       -}
                    , RnPolyTy        {- Term type (MonoTy?)      -}
                    , FullTheory )    {- Final program theory     -}
 -- Elaborate the program expression
-elabProgram theory (PgmExp tm) = do
-  (ty, fc_tm) <- elabTermSimpl (ftDropSuper theory) tm
+elabProgram theory _super_theory (PgmExp tm) = do
+  (ty, fc_tm) <- elabTermSimpl (ftToProgramTheory theory) tm
   return (FcPgmTerm fc_tm, ty, theory) -- GEORGE: You should actually return the ones we have accumulated.
 
 -- Elaborate a class declaration
-elabProgram theory (PgmCls cls_decl pgm) = do
+elabProgram theory  super_theory (PgmCls cls_decl pgm) = do
   (fc_data_decl, fc_val_bind, fc_sc_proj, ext_theory, ext_ty_env)  <- elabClsDecl cls_decl
-  (fc_pgm, ty, final_theory) <- setTcCtxTmM ext_ty_env (elabProgram (theory `ftExtendSuper` ext_theory) pgm)
+  (fc_pgm, ty, final_theory) <- setTcCtxTmM ext_ty_env (elabProgram theory (super_theory `mappend` ext_theory) pgm)
   let fc_program = FcPgmDataDecl fc_data_decl (FcPgmValDecl fc_val_bind (foldl (flip FcPgmValDecl) fc_pgm fc_sc_proj))
   return (fc_program, ty, final_theory)
 
 -- | Elaborate a class instance
-elabProgram theory (PgmInst ins_decl pgm) = do
-  (fc_val_bind, ext_theory) <- elabInsDecl theory ins_decl
-  (fc_pgm, ty, final_theory) <- elabProgram ext_theory pgm
+elabProgram theory  super_theory (PgmInst ins_decl pgm) = do
+  (fc_val_bind, ext_theory) <- elabInsDecl theory super_theory ins_decl
+  (fc_pgm, ty, final_theory) <- elabProgram ext_theory super_theory pgm
   let fc_program = FcPgmValDecl fc_val_bind fc_pgm
   return (fc_program, ty, final_theory)
 
 -- Elaborate a datatype declaration
-elabProgram theory (PgmData data_decl pgm) = do
+elabProgram theory  super_theory (PgmData data_decl pgm) = do
   fc_data_decl <- elabDataDecl data_decl
-  (fc_pgm, ty, final_theory) <- elabProgram theory pgm
+  (fc_pgm, ty, final_theory) <- elabProgram theory super_theory pgm
   let fc_program = FcPgmDataDecl fc_data_decl fc_pgm
   return (fc_program, ty, final_theory)
 
@@ -1158,10 +1158,10 @@ hsElaborate rn_gbl_env us pgm = runWriter
                               $ flip runReaderT tc_init_ctx
                               $ flip runUniqueSupplyT us
                               $ do { buildInitTcEnv pgm rn_gbl_env -- Create the actual global environment
-                                   ; result <- elabProgram tc_init_theory pgm
+                                   ; result <- elabProgram tc_init_theory mempty pgm
                                    ; assocs <- buildInitFcAssocs
                                    ; return (result, assocs) }
   where
-    tc_init_theory  = FT mempty mempty mempty
+    tc_init_theory  = FT mempty mempty
     tc_init_ctx     = mempty
     tc_init_gbl_env = TcEnv mempty mempty mempty

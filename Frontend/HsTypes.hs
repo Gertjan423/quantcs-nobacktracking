@@ -380,13 +380,8 @@ type AnnClsCs = [AnnClsCt]
 -- | The program theory is just a list of name-annotated constrains
 type ProgramTheory = AnnCts
 
-data FullTheory = FT { theory_super :: ProgramTheory
-                     , theory_inst  :: ProgramTheory
+data FullTheory = FT { theory_inst  :: ProgramTheory
                      , theory_local :: ProgramTheory }
-
--- | Extend the superclass component of the theory
-ftExtendSuper :: FullTheory -> ProgramTheory -> FullTheory
-ftExtendSuper theory super_cs = theory { theory_super = theory_super theory `mappend` super_cs }
 
 -- | Extend the instance component of the theory
 ftExtendInst :: FullTheory -> ProgramTheory -> FullTheory
@@ -398,15 +393,7 @@ ftExtendLocal theory local_cs = theory { theory_local = theory_local theory `map
 
 -- | Collapse the full program theory to a program theory (just concatenate)
 ftToProgramTheory :: FullTheory -> ProgramTheory
-ftToProgramTheory (FT super inst local) = mconcat [super,inst,local]
-
--- | Drop the superclass component of the full theory and turn it into a program theory (concatenate)
-ftDropSuper :: FullTheory -> ProgramTheory
-ftDropSuper (FT _super inst local) = inst `mappend` local
-
--- | Remove the superclass component of the full theory, without turning it into a program theory
-ftRemoveSuper :: FullTheory -> FullTheory
-ftRemoveSuper (FT _super inst local) = (FT SN inst local)
+ftToProgramTheory (FT inst local) = mconcat [inst,local]
 
 -- * Collecting Free Variables Out Of Objects
 -- ------------------------------------------------------------------------------
@@ -514,10 +501,9 @@ instance PrettyPrint ClassInfo where
   needsParens _ = False
 
 instance PrettyPrint FullTheory where
-  ppr (FT super inst local)
+  ppr (FT inst local)
     = braces $ vcat $ punctuate comma
-    $ [ text "theory_super" <+> colon <+> ppr super
-      , text "theory_inst"  <+> colon <+> ppr inst
+    $ [ text "theory_inst"  <+> colon <+> ppr inst
       , text "theory_local" <+> colon <+> ppr local
       ]
   needsParens _ = False
