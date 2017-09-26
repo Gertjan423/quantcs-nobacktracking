@@ -395,6 +395,10 @@ ftExtendLocal theory local_cs = theory { theory_local = theory_local theory `map
 ftToProgramTheory :: FullTheory -> ProgramTheory
 ftToProgramTheory (FT inst local) = mconcat [inst,local]
 
+-- | Convert a given program theory to a simple list of constraints, by converting to a list and dropping the type annotations
+programTheoryToCts :: ProgramTheory -> RnCts
+programTheoryToCts = (map (\(_ :| ctr) -> ctr)) . snocListToList
+
 -- * Collecting Free Variables Out Of Objects
 -- ------------------------------------------------------------------------------
 

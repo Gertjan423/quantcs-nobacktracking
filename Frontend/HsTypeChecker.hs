@@ -34,7 +34,7 @@ import Control.Monad.Except
 import Control.Arrow (second)
 import Data.List (nub)
 
--- import Debug.Trace
+import Debug.Trace
 
 -- * Create the typechecking environment from the renaming one
 -- ------------------------------------------------------------------------------
@@ -966,7 +966,8 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
   dtrans_ty <- do
     fc_head_ty <- extendTcCtxTysM (map labelOf bs) (wfElabCtr (CtrClsCt head_ct))
     fc_ins_ctx <- extendTcCtxTysM (map labelOf bs) (wfElabCts ins_ctx)
-    return $ fcTyAbs fc_bs $ fcTyArr fc_ins_ctx fc_head_ty
+    fc_lcl_ctx <- extendTcCtxTysM (map labelOf bs) (wfElabCts (programTheoryToCts local_super_axs))
+    return $ fcTyAbs fc_bs $ fcTyArr (fc_ins_ctx ++ fc_lcl_ctx) fc_head_ty
 
   -- Elaborate the method implementation
   let local_theory1 = theory `ftExtendInst` ins_theory `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
@@ -993,12 +994,14 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
 
   -- The full implementation of the dictionary transformer
   fc_dict_transformer <- do
-    binds <- annCtsToTmBinds ann_ins_ctx
-    dc    <- lookupClsDataCon cls
+    binds  <- annCtsToTmBinds ann_ins_ctx
+    binds' <- annCtsToTmBinds local_super_axs
+    dc     <- lookupClsDataCon cls
     pat_ty <- elabMonoTy (hsTyPatToMonoTy typat)
     return $ fcTmTyAbs fc_bs $
                fcTmAbs binds $
-                 fcDataConApp dc pat_ty (fc_super_tms ++ [fc_method_tm])
+                 fcTmAbs binds' $
+                   fcDataConApp dc pat_ty (fc_super_tms ++ [fc_method_tm])
 
   -- Resulting dictionary transformer
   let fc_val_bind = FcValBind ins_d dtrans_ty fc_dict_transformer
