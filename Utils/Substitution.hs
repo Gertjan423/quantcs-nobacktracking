@@ -15,6 +15,7 @@ import Utils.Annotated
 import Utils.Unique
 import Utils.Utils
 import Utils.PrettyPrint
+import Utils.SnocList
 
 import Control.Monad (liftM2)
 
@@ -163,6 +164,12 @@ instance Subst (Sub x y) x y where
 sub_rec :: SubstVar v t x => Sub v t -> x -> x
 sub_rec SNil          t = t
 sub_rec (SCons s x y) t = sub_rec s (substVar x y t)
+
+-- | Convert a SnocList of substitutions to a single substitution
+subSnocListToSub :: SnocList (Sub x y) -> Sub x y
+subSnocListToSub SN                 = SNil
+subSnocListToSub (l :> SNil       ) = subSnocListToSub l
+subSnocListToSub (l :> SCons s x y) = SCons (subSnocListToSub (l :> s)) x y
 
 -- * The ApplySubst Class
 -- ------------------------------------------------------------------------------
