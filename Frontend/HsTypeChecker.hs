@@ -34,7 +34,7 @@ import Control.Monad.Except
 import Control.Arrow (second)
 import Data.List (nub)
 
--- import Debug.Trace
+import Debug.Trace
 
 -- * Create the typechecking environment from the renaming one
 -- ------------------------------------------------------------------------------
@@ -594,7 +594,7 @@ getSuperClsCt untchs superThr clsCt = lookupSLMaybeFullM getSuperClsCt' superThr
       checkCtrOverlap untchs (constructCtr ([], [], clsD)) clsCt >>= \case -- TODO okay to leave asD?
         Just subst -> do
           d' <- freshDictVar
-          return $ Just $ (d' :| (applySubst subst ctrD) , d)
+          trace (renderWithColor (ppr d')) $ return $ Just $ (d' :| (applySubst subst ctrD) , d)
         Nothing    -> return Nothing
 
     deconstructSuperCtr :: RnCtr -> TcM ([RnTyVarWithKind], RnClsCt, RnCtr)
@@ -992,15 +992,16 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
     let local_theory2 = theory `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
     ev_subst <- entailTcM (map labelOf bs) (ftToProgramTheory local_theory2) super_cs
 
-    return (map (applySubst local_subst . substFcTmInTm ev_subst . FcTmVar) ds)
+    trace (renderWithColor (ppr local_subst)) $ return (map (substFcTmInTm local_subst . substFcTmInTm ev_subst . FcTmVar) ds)
 
   -- The full implementation of the dictionary transformer
   fc_dict_transformer <- do
     binds  <- annCtsToTmBinds ann_ins_ctx
     dc     <- lookupClsDataCon cls
-    return $ fcTmTyAbs fc_bs $
-               fcTmAbs binds $
-                 fcDataConApp dc pat_ty (fc_super_tms ++ [fc_method_tm])
+    return $ substFcTmInTm local_subst $
+               fcTmTyAbs fc_bs $
+                 fcTmAbs binds $
+                   fcDataConApp dc pat_ty (fc_super_tms ++ [fc_method_tm])
 
   -- Resulting dictionary transformer
   let fc_val_bind = FcValBind ins_d dtrans_ty fc_dict_transformer
@@ -1023,16 +1024,16 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
       -> (replaceCtrHead ctr_i ctrS, dS, d_i)
 
     construct_local_subst :: FcType -> SnocList (AnnCtr, DictVar, DictVar)
-                          -> Sub DictVar FcTerm
+                          -> FcTmSubst
     construct_local_subst ty = subSnocListToSub . construct_local_subst' ty
 
     construct_local_subst' :: FcType -> SnocList (AnnCtr, DictVar, DictVar)
-                           -> SnocList (Sub DictVar FcTerm)
+                           -> SnocList FcTmSubst
     construct_local_subst' ty = fmap $ \((d_L :| _), d_S, d_i)
       -> construct_local_subst_single d_L d_S d_i ty
 
     construct_local_subst_single :: DictVar -> DictVar -> DictVar -> FcType
-                                 -> Sub DictVar FcTerm
+                                 -> FcTmSubst
     construct_local_subst_single d_L d_S d_i ty
       = d_L |-> fcDictApp (fcTmTyApp (FcTmVar d_S) [ty]) [d_i]
 
