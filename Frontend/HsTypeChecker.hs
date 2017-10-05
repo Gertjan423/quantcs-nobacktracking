@@ -732,12 +732,18 @@ rightEntailsNoBacktrack untch theory (d0 :| CtrImpl ctr1 ctr2) = do
 rightEntailsNoBacktrack untch theory (d :| CtrClsCt cls_ct) = do
   overlapping <- getOverlap untch theory cls_ct
   -- TODO Sure that we want an error when entailment fails?
-  when (snocListLength overlapping == 0) $ throwError $ "Entailment failed: No matching axioms available : " ++ (renderWithColor (ppr cls_ct)) ++ " in " ++ (renderWithColor (ppr theory))
-  when (snocListLength overlapping > 1) $ throwError $ "Entailment failed: Overlapping axioms : " ++ (renderWithColor (ppr cls_ct)) ++ " in " ++ (renderWithColor (ppr theory)) ++ " \n namely " ++ (renderWithColor (ppr overlapping))
-  leftEntails untch (head $ snocListToList overlapping) (d :|cls_ct) >>= \case -- TODO list conversion not very nice ; okay to keep name d?
+  when (snocListLength overlapping == 0) $
+    throwErrorM (text "Entailment failed: No matching axioms available :"
+                $$ parens (text "ctr="    <+> ppr cls_ct)
+                $$ parens (text "theory=" <+> ppr theory))
+  when (snocListLength overlapping > 1) $
+    throwErrorM (text "Entailment failed: Overlapping axioms :"
+                $$ parens (text "ctr="    <+> ppr cls_ct)
+                $$ parens (text "theory=" <+> ppr theory)
+                $$ parens (text "axioms=" <+> ppr overlapping))
+  leftEntails untch (head $ snocListToList overlapping) (d :| cls_ct) >>= \case
     Nothing  -> throwError "Entailment failed"
     Just res -> return res
-  -- = leftEntailsBacktrack untch theory (d :| cls_ct)
 
 -- Universal Quantification Case -- GEORGE: Finish rewriting me
 rightEntailsNoBacktrack untch theory (d0 :| (CtrAbs (b :| _) inctr)) = do
