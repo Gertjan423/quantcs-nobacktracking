@@ -17,6 +17,7 @@ module Utils.SnocList
 import Data.List (nub)
 import Utils.PrettyPrint
 import Utils.FreeVars
+import Control.Applicative
 
 -- | SnocLists
 data SnocList a = SN | (SnocList a) :> a
@@ -50,6 +51,14 @@ instance Monoid (SnocList a) where
 instance Functor SnocList where
   fmap _f SN        = SN
   fmap  f (xs :> x) = fmap f xs :> f x
+
+instance Foldable SnocList where
+  foldMap _f SN        = mempty
+  foldMap  f (xs :> x) = f x `mappend` (foldMap f xs)
+
+instance Traversable SnocList where
+  sequenceA SN        = pure SN
+  sequenceA (xs :> x) = liftA2 (:>) (sequenceA xs) x
 
 instance (Eq tv, ContainsFreeTyVars a tv) => ContainsFreeTyVars (SnocList a) tv where
   ftyvsOf = nub . concatMap ftyvsOf . snocListToList
