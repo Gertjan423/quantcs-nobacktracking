@@ -212,6 +212,14 @@ substInCtr = sub_rec
 substInCts :: HsTySubst -> RnCts -> RnCts
 substInCts subst = map (substInCtr subst)
 
+-- | Apply a type substitution to an annotated constraint
+substInAnnCtr :: HsTySubst -> AnnCtr -> AnnCtr
+substInAnnCtr subst (d :| ctr) = d :| (substInCtr subst ctr)
+
+-- | Apply a type substitution to a list of annotated constraints
+substInAnnCts :: HsTySubst -> AnnCts -> AnnCts
+substInAnnCts subst = fmap (substInAnnCtr subst)
+
 -- | Apply a type substitution to a class constraint
 substInClsCt :: HsTySubst -> RnClsCt -> RnClsCt
 substInClsCt subst (ClsCt cls ty) = ClsCt cls (substInMonoTy subst ty)

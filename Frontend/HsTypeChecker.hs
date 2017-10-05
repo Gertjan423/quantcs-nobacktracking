@@ -369,6 +369,18 @@ freshenRnTyVars tvs = do
   let subst = buildRnSubst (zipExact tvs new_tvs)
   return (new_tvs, subst)
 
+-- | Freshen up a list of kind annotated type variables. Return
+--   a) the list of fresh variables (NB: same length as input)
+--   b) the substitution from the old to the fresh ones
+freshenRnTyVarsWithKind :: [RnTyVarWithKind] -> TcM ([RnTyVarWithKind], HsTySubst)
+freshenRnTyVarsWithKind tvs = do
+  new_tvs <- mapM (\(_v :| k) -> (freshRnTyVar k >>= (\nv -> return (nv :| k)))) tvs
+  let subst = buildRnSubst (zipExact (dropKinds tvs) (dropKinds new_tvs))
+  return (new_tvs, subst)
+  where
+    dropKinds :: [RnTyVarWithKind] -> [RnTyVar]
+    dropKinds = map (\(v :| _k) -> v)
+
 -- | Instantiate a polytype with fresh unification variables
 instPolyTy :: RnPolyTy -> TcM ([RnTyVar], RnCts, RnMonoTy)
 instPolyTy poly_ty = do
@@ -953,8 +965,9 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
   overlapCheck theory head_ct
 
   -- Create the instance constraint scheme
-  ins_d <- freshDictVar
-  let ins_scheme = ins_d |: constructCtr (bs, ins_ctx, head_ct)
+  ins_d                <- freshDictVar
+  (bs_fresh, bs_subst) <- freshenRnTyVarsWithKind bs
+  let ins_scheme = ins_d |: constructCtr (bs_fresh, (substInCts bs_subst ins_ctx), (substInClsCt bs_subst head_ct))
   let ins_theory = singletonSnocList ins_scheme
 
   --  Generate fresh dictionary variables for the instance context
@@ -974,7 +987,7 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
   -- Create the dictionary transformer type
   dtrans_ty <- do
     fc_head_ty <- extendTcCtxTysM (map labelOf bs) (wfElabCtr (CtrClsCt head_ct))
-    fc_ins_ctx <- extendTcCtxTysM (map labelOf bs) (wfElabCts ins_ctx)
+    fc_ins_ctx <- extendTcCtxTysM (map labelOf bs) (wfElabCts (ins_ctx))
     return $ fcTyAbs fc_bs $ fcTyArr fc_ins_ctx fc_head_ty
 
   -- Elaborate the method implementation
@@ -1015,8 +1028,8 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
   return (fc_val_bind, ext_theory)
   where
     bs       = ftyvsOf typat
-    unann_bs = map tyVarWithKindToTyVar bs
     fc_bs    = map (rnTyVarToFcTyVar . labelOf) bs
+    unann_bs = map tyVarWithKindToTyVar bs
     head_ct  = ClsCt cls (hsTyPatToMonoTy typat)
 
     constructLocalAxsNested :: [(AnnCtr, SnocList (AnnCtr, DictVar, [RnMonoTy]))]
