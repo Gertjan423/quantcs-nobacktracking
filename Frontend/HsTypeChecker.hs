@@ -34,7 +34,7 @@ import Control.Monad.Except
 import Control.Arrow (second)
 import Data.List (nub)
 
-import Debug.Trace
+-- import Debug.Trace
 
 -- * Create the typechecking environment from the renaming one
 -- ------------------------------------------------------------------------------
@@ -583,18 +583,18 @@ checkCtrOverlap untchs ctr clsCt = unifyClsCtr untchs clsCt (ctrHead ctr)
 -- ------------------------------------------------------------------------------
 
 -- | Returns the superclasses of a given class constraints, with a given list of superclass relations
-getSuperClsCt :: [RnTyVar] -> ProgramTheory -> RnClsCt -> TcM (SnocList (AnnCtr , DictVar))
+getSuperClsCt :: [RnTyVar] -> ProgramTheory -> RnClsCt -> TcM (SnocList (AnnCtr , DictVar , [RnMonoTy]))
 getSuperClsCt untchs superThr clsCt = lookupSLMaybeFullM getSuperClsCt' superThr >>= \case
   Just res -> return $ fmap snd res
   Nothing  -> return mempty
   where
-    getSuperClsCt' :: AnnCtr -> TcM (Maybe (AnnCtr , DictVar))
+    getSuperClsCt' :: AnnCtr -> TcM (Maybe (AnnCtr , DictVar , [RnMonoTy]))
     getSuperClsCt' (d :| ctr) = do
-      (_asD, clsD, ctrD) <- deconstructSuperCtr ctr
-      checkCtrOverlap untchs (constructCtr ([], [], clsD)) clsCt >>= \case -- TODO okay to leave asD?
+      (asD, clsD, ctrD) <- deconstructSuperCtr ctr
+      checkCtrOverlap untchs (constructCtr (asD, [], clsD)) clsCt >>= \case
         Just subst -> do
           d' <- freshDictVar
-          trace (renderWithColor (ppr d')) $ return $ Just $ (d' :| (applySubst subst ctrD) , d)
+          return $ Just $ (d' :| (applySubst subst ctrD) , d , substInTyVars subst (map tyVarWithKindToTyVar asD))
         Nothing    -> return Nothing
 
     deconstructSuperCtr :: RnCtr -> TcM ([RnTyVarWithKind], RnClsCt, RnCtr)
@@ -959,8 +959,8 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
   let nested_local_super_axs_zip = zip (snocListToList ann_ins_ctx) nested_local_super_axs
   let local_super_axs_tup = concatSnocList
                           $ listToSnocList
-                          $ construct_local_axs_nested nested_local_super_axs_zip
-  let local_super_axs = fmap (\(c,_,_) -> c) local_super_axs_tup
+                          $ constructLocalAxsNested nested_local_super_axs_zip
+  let local_super_axs = fmap (\(c,_,_,_) -> c) local_super_axs_tup
 
   -- The extended program theory
   let ext_theory = theory `ftExtendInst` ins_theory
@@ -979,7 +979,7 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
 
   -- Construct local substitution
   pat_ty <- elabMonoTy (hsTyPatToMonoTy typat)
-  let local_subst = construct_local_subst pat_ty local_super_axs_tup
+  local_subst <- constructLocalSubst local_super_axs_tup
 
   -- Entail the superclass constraints
   fc_super_tms <- do
@@ -992,7 +992,7 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
     let local_theory2 = theory `ftExtendLocal` local_super_axs `ftExtendLocal` ann_ins_ctx
     ev_subst <- entailTcM (map labelOf bs) (ftToProgramTheory local_theory2) super_cs
 
-    trace (renderWithColor (ppr local_subst)) $ return (map (substFcTmInTm local_subst . substFcTmInTm ev_subst . FcTmVar) ds)
+    return (map (substFcTmInTm local_subst . substFcTmInTm ev_subst . FcTmVar) ds)
 
   -- The full implementation of the dictionary transformer
   fc_dict_transformer <- do
@@ -1013,29 +1013,32 @@ elabInsDecl theory super_theory (InsD ins_ctx cls typat method method_tm) = do
     fc_bs    = map (rnTyVarToFcTyVar . labelOf) bs
     head_ct  = ClsCt cls (hsTyPatToMonoTy typat)
 
-    construct_local_axs_nested :: [(AnnCtr, SnocList (AnnCtr, DictVar))]
-                               -> [SnocList (AnnCtr, DictVar, DictVar)]
-    construct_local_axs_nested = map $ \((d_i :| ctr_i), local_super)
-      -> construct_local_ax d_i ctr_i local_super
+    constructLocalAxsNested :: [(AnnCtr, SnocList (AnnCtr, DictVar, [RnMonoTy]))]
+                               -> [SnocList (AnnCtr, DictVar, DictVar, [RnMonoTy])]
+    constructLocalAxsNested = map $ \((d_i :| ctr_i), local_super)
+      -> constructLocalAx d_i ctr_i local_super
 
-    construct_local_ax :: DictVar -> RnCtr -> SnocList (AnnCtr, DictVar)
-                       -> SnocList (AnnCtr, DictVar, DictVar)
-    construct_local_ax d_i ctr_i = fmap $ \(ctrS, dS)
-      -> (replaceCtrHead ctr_i ctrS, dS, d_i)
+    constructLocalAx :: DictVar -> RnCtr -> SnocList (AnnCtr, DictVar, [RnMonoTy])
+                       -> SnocList (AnnCtr, DictVar, DictVar, [RnMonoTy])
+    constructLocalAx d_i ctr_i = fmap $ \(ctrS, dS, tys)
+      -> (replaceCtrHead ctr_i ctrS, dS, d_i, tys)
 
-    construct_local_subst :: FcType -> SnocList (AnnCtr, DictVar, DictVar)
-                          -> FcTmSubst
-    construct_local_subst ty = subSnocListToSub . construct_local_subst' ty
+    constructLocalSubst :: SnocList (AnnCtr, DictVar, DictVar, [RnMonoTy])
+                          -> TcM FcTmSubst
+    constructLocalSubst l = constructLocalSubst' l >>= return . subSnocListToSub
 
-    construct_local_subst' :: FcType -> SnocList (AnnCtr, DictVar, DictVar)
-                           -> SnocList FcTmSubst
-    construct_local_subst' ty = fmap $ \((d_L :| _), d_S, d_i)
-      -> construct_local_subst_single d_L d_S d_i ty
+    constructLocalSubst' :: SnocList (AnnCtr, DictVar, DictVar, [RnMonoTy])
+                           -> TcM (SnocList FcTmSubst)
+    constructLocalSubst' = mapM $ \((d_L :| _), d_S, d_i, tys)
+      -> (elabTysForSubst tys >>= \fc_tys -> return $ constructLocalSubstSingle d_L d_S d_i fc_tys)
 
-    construct_local_subst_single :: DictVar -> DictVar -> DictVar -> FcType
+    elabTysForSubst :: [RnMonoTy] -> TcM [FcType]
+    elabTysForSubst tys = forM tys elabMonoTy
+
+    constructLocalSubstSingle :: DictVar -> DictVar -> DictVar -> [FcType]
                                  -> FcTmSubst
-    construct_local_subst_single d_L d_S d_i ty
-      = d_L |-> fcDictApp (fcTmTyApp (FcTmVar d_S) [ty]) [d_i]
+    constructLocalSubstSingle d_L d_S d_i fc_tys
+      = d_L |-> fcDictApp (fcTmTyApp (FcTmVar d_S) fc_tys) [d_i]
 
 -- | Append the tail of a constraint to another given constraint
 replaceCtrHead :: RnCtr -> AnnCtr -> AnnCtr
