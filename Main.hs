@@ -6,6 +6,7 @@ import Frontend.HsParser      (hsParse)
 import Frontend.HsRenamer     (hsRename)
 import Frontend.HsTypeChecker (hsElaborate)
 import Backend.FcTypeChecker  (fcTypeCheck)
+import Backend.FcEvaluator    (fcEvaluate)
 
 import Utils.Unique  (newUniqueSupply)
 import Utils.PrettyPrint
@@ -34,7 +35,8 @@ runTest file = do
             (Right ((((fc_pgm, tc_ty, theory), envs), us2), _tc_env), _) ->
               case fcTypeCheck envs us2 fc_pgm of
                 (Left err,_) -> throwMainError "System F typechecker" err
-                (Right ((fc_ty, _us3), _fc_env), _trace) -> do
+                (Right ((fc_ty, us3), _fc_env), _trace) -> do
+                  let fc_val = fcEvaluate us3 fc_pgm
                   putStrLn "---------------------------- Elaborated Program ---------------------------"
                   putStrLn $ renderWithColor $ ppr fc_pgm
                   putStrLn "------------------------------- Program Type ------------------------------"
@@ -43,6 +45,8 @@ runTest file = do
                   putStrLn $ renderWithColor $ ppr theory
                   putStrLn "-------------------------- System F Program Type --------------------------"
                   putStrLn $ renderWithColor $ ppr fc_ty
+                  putStrLn "-------------------------- System F Result Value --------------------------"
+                  putStrLn $ renderWithColor $ ppr fc_val
   where
     throwMainError phase e
       | label <- colorDoc red (text phase <+> text "failure")

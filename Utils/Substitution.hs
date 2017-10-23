@@ -279,6 +279,16 @@ substFcTmInTm = sub_rec
 substFcTmInAlt :: FcTmSubst -> FcAlt -> FcAlt
 substFcTmInAlt = sub_rec
 
+-- | Apply a term substitution to a program
+substFcTmInPgm :: FcTmSubst -> FcProgram -> FcProgram
+substFcTmInPgm sub (FcPgmDataDecl decl pgm) = FcPgmDataDecl decl $ substFcTmInPgm sub pgm
+substFcTmInPgm sub (FcPgmValDecl  val  pgm) = FcPgmValDecl (substFcTmInVal sub val) $ substFcTmInPgm sub pgm
+substFcTmInPgm sub (FcPgmTerm tm)           = FcPgmTerm $ substFcTmInTm sub tm
+
+-- | Apply a term substitution to a value binding
+substFcTmInVal :: FcTmSubst -> FcValBind -> FcValBind
+substFcTmInVal sub (FcValBind x ty tm) = FcValBind x ty (substFcTmInTm sub tm)
+
 -- * The Subst class
 -- ------------------------------------------------------------------------------
 
